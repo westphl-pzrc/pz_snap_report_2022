@@ -1,0 +1,610 @@
+---
+title: "Promise Zone SNAP Analysis"
+author: "Nissim Lebovits"
+date: "3/31/2022"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: hide
+---
+
+```{r library, include = FALSE, echo = FALSE, message = FALSE, warning = FALSE, error = FALSE}
+library(tidyverse, quietly = T)
+library(tidycensus, quietly = T)
+library(acs, quietly = T)
+library(sf, quietly = T)
+library(ggpubr, quietly = T)
+library(lubridate, quietly = T)
+library(stringr, quietly = T) #For mutating tract_names
+library(tmap, quietly = T)
+library(kableExtra, quietly = T) #For kable styling
+library(gtools, quietly = T) #For smartbind
+library(gridExtra, quietly = T) #For grid.arrange
+```
+
+```{r imports, include = FALSE, echo = FALSE, message = FALSE, warning = FALSE, error = FALSE}
+pz <- read_sf("C:/Users/Nissim.Lebovits/OneDrive - City of Philadelphia/Desktop/Data/R Scripts and Datasets/General Boundaries/Shapefiles/PZ_Shapefile",
+              "PZ_Boundaries",
+              stringsAsFactors = FALSE) |>
+              st_transform(crs = st_crs("EPSG:4326"))
+
+phl_hoods <- read_sf("C:/Users/Nissim.Lebovits/OneDrive - City of Philadelphia/Desktop/Data/R Scripts and Datasets/General Boundaries/Shapefiles/Philadelphia_Neighborhoods",
+                     "Neighborhoods_Philadelphia",
+                     stringsAsFactors = FALSE)|>
+              st_transform(crs = st_crs("EPSG:4326"))
+
+phl_tracts <- read_sf("C:/Users/Nissim.Lebovits/OneDrive - City of Philadelphia/Desktop/Data/R Scripts and Datasets/General Boundaries/Shapefiles/Census_Tracts",
+                      "Census_Tracts",
+                      stringsAsFactors = FALSE)|>
+              st_transform(crs = st_crs("EPSG:4326"))
+
+historic_snap_sites <- read.csv("C:/Users/Nissim.Lebovits/OneDrive - City of Philadelphia/Desktop/Data/R Scripts and Datasets/Health/SNAP/SNAP_Data.csv") |>
+         filter(State == "PA",
+         City == "Philadelphia")
+
+#Import pz_snap csv
+#Note: I cleaned this by hand by first using R to filter for historic SNAP sites in the Promise Zone
+#and then removing duplicates and identifying sites that had just changed names without ceasing to offer SNAP.
+pz_snap <- read.csv("C:/Users/Nissim.Lebovits/OneDrive - City of Philadelphia/Desktop/Data/R Scripts and Datasets/Health/SNAP/Promise_Zone_Inactive_SNAP_Sites_Feb_2022_geocodio.csv")
+
+pz_snap = st_as_sf(pz_snap, 
+            coords = c("Longitude", "Latitude"), 
+            crs = st_crs("EPSG:4326"))
+
+#transit routes
+phl_bus_routes = st_read("C:/Users/Nissim.Lebovits/OneDrive - City of Philadelphia/Desktop/Data/R Scripts and Datasets/SEPTA",
+                          "Fall_2021_Routes",
+                          stringsAsFactors = F) |>
+                            st_transform(crs = st_crs("EPSG:4326"))
+
+phl_trolley_routes = st_read("C:/Users/Nissim.Lebovits/OneDrive - City of Philadelphia/Desktop/Data/R Scripts and Datasets/SEPTA",
+                          "SEPTA_-_Trolley_Routes",
+                          stringsAsFactors = F) |>
+                            st_transform(crs = st_crs("EPSG:4326"))
+
+phl_highspeed_routes = st_read("C:/Users/Nissim.Lebovits/OneDrive - City of Philadelphia/Desktop/Data/R Scripts and Datasets/SEPTA",
+                          "SEPTA_-_Highspeed_Lines",
+                          stringsAsFactors = F) |>
+                            st_transform(crs = st_crs("EPSG:4326"))
+
+#transit stops
+phl_bus_stops = st_read("C:/Users/Nissim.Lebovits/OneDrive - City of Philadelphia/Desktop/Data/R Scripts and Datasets/SEPTA",
+                          "Fall_2021_Stops_by_Route",
+                          stringsAsFactors = F) |>
+                            st_transform(crs = st_crs("EPSG:4326"))
+
+phl_trolley_stops = st_read("C:/Users/Nissim.Lebovits/OneDrive - City of Philadelphia/Desktop/Data/R Scripts and Datasets/SEPTA",
+                          "SEPTA_-_Trolley_Stops",
+                          stringsAsFactors = F) |>
+                            st_transform(crs = st_crs("EPSG:4326"))
+
+phl_highspeed_stops = st_read("C:/Users/Nissim.Lebovits/OneDrive - City of Philadelphia/Desktop/Data/R Scripts and Datasets/SEPTA",
+                          "SEPTA_-_Highspeed_Stations",
+                          stringsAsFactors = F) |>
+                            st_transform(crs = st_crs("EPSG:4326"))
+
+```
+
+
+### **Background**
+The primary goal of this report is to use publicly-available data to better inform Promise Zone SNAP policy. Drawing on data from the Census Bureau and USDA, this report: 1) gives an overview of current SNAP conditions in the Promise Zone, 2) highlights changes in Promise Zone SNAP access over the last decade, and 3) provides actionable suggestions for improving access.
+
+Three criteria for SNAP access are considered in this report: 1) SNAP enrollment, 2) the number of stores that accept SNAP vouchers, and 3) the types and locations of those stores. Additional metrics were calculated based on those data. These include the ratio of SNAP stores to SNAP enrollees per tract, the [average SNAP income cutoff per tract](https://www.benefits.gov/benefit/1169#:~:text=Annual%20Household%20Income%20Limits%20%28before%20taxes%29%20%20,%20%20%2436%2C075%20%204%20more%20rows%20), and the ratio of the median income per tract to the average SNAP cutoff per tract. For an explanation of how these were calculated and the underlying code, see the "Methodology" section at the end of this report. 
+
+
+### **Summary**
+SNAP access in the Promise Zone has declined dramatically over the last ten years. Stores accepting SNAP in the Promise Zone are poorly located relative to where SNAP enrollment is highest. Of the stores in the Promise Zone that accept SNAP, half are convenience stores and are therefore poorly-positioned to offer quality food options.
+
+In order to fix these issues, this report recommends: **1) targeted SNAP enrollment outreach to residents in and around Powelton, 2) efforts to increase the number of stores in Mantua and Powelton that accept SNAP vouchers, and 3) efforts to boost the number of large grocery stores and supermarkets in the Promise Zone, ideally in Mantua.**
+
+
+### **Current SNAP Conditions in the PZ**
+This section outlines the current state of SNAP enrollment and access in the Promise Zone. The first map indicates the percent SNAP enrollment per tract. The second map and accompaying table indicate the locations and types of currently-active sites accepting SNAP vouchers in the Promise Zone. The final chart illustrates the types of stores accepting SNAP vouchers in the Promise Zone.
+
+```{r load and clean, include = TRUE, echo = TRUE, message = FALSE, warning = FALSE, error = FALSE, results = 'hide'}
+phl_demos <- get_acs(geography = "tract", 
+                     year = 2020, #Most recent available year
+                     variables = c("B11001_001E", #Total number of households
+                                   "B22001_002E", #Number of hholds that received foodstamps/SNAP in last 12 months
+                                   "B19013_001E", #Median household income in last 12 months
+                                   "B25010_001E" #Avg household size
+                                   ), 
+                     geometry = T, #we want this as a sf
+                     state = "PA", 
+                     county = "Philadelphia", 
+                     output = "wide") |> 
+  rename(tot_hh = B11001_001E,
+         snap_enroll = B22001_002E,
+         med_hh_inc = B19013_001E,
+         avg_hh_size = B25010_001E) 
+
+phl_demos <- phl_demos |>
+  mutate(perc_snap = snap_enroll / tot_hh * 100) |>
+  mutate(avg_snap_thresh = (12*(1396 + (492*(avg_hh_size-1))))) |>
+  mutate(med_hh_inc_as_perc_snap_thresh =  med_hh_inc / avg_snap_thresh)|>
+              st_transform(crs = st_crs("EPSG:4326"))
+
+#clean historic sites
+
+historic_snap_sites$street_address <-paste(historic_snap_sites$Street.Number, historic_snap_sites$Street.Name, sep=" ")
+
+
+historic_snap_sites = historic_snap_sites |>
+                        mutate(end_year = year(mdy(End.Date)))
+
+historic_snap_sites$end_year[is.na(historic_snap_sites$end_year)] <- "active"
+
+#clean active sites
+
+active_phl_sites <- historic_snap_sites |>
+                     filter(end_year == "active")
+
+#I'm using st_join() to join SNAP sites to their tract IDs. This works as long as the sites don't fall on a tract
+#border, which is possible.
+active_phl_sites = st_as_sf(active_phl_sites, 
+                               coords = c("Longitude", "Latitude"), 
+                               crs = st_crs("EPSG:4326"))
+
+active_phl_sites = st_join(active_phl_sites, phl_tracts)
+
+active_phl_sites_by_tract <- active_phl_sites |>
+                              group_by(GEOID10) |>
+                              tally()
+
+active_phl_sites_by_tract$GEOID10 <- as.character(active_phl_sites_by_tract$GEOID10)
+
+active_phl_sites_by_tract = st_transform(active_phl_sites_by_tract, st_crs("EPSG:4326"))
+
+active_phl_sites_by_tract <- st_join(phl_demos, active_phl_sites_by_tract)
+
+active_phl_sites_by_tract$n[is.na(active_phl_sites_by_tract$n)] = 0
+
+active_phl_sites_by_tract <- active_phl_sites_by_tract |>
+  mutate(snap_per_hh = n / snap_enroll)
+
+#Define logicals
+
+#Defining a logical variable for tracts where the median household income is less than the average snap threshold for the tract
+active_phl_sites_by_tract$below_snap_cut = case_when(
+                                              active_phl_sites_by_tract$med_hh_inc_as_perc_snap_thresh < 1 ~ "Yes",
+                                              active_phl_sites_by_tract$med_hh_inc_as_perc_snap_thresh >= 1 ~ "No"
+                                            )
+
+active_phl_sites_by_tract[is.infinite(active_phl_sites_by_tract$snap_per_hh), ] <- NA
+
+#Defining a categorical variable so that a low snap per hh value is anything below half the city-wide median of snap sites per hh per tract
+active_phl_sites_by_tract$low_snap_per_hh = case_when(
+                                              active_phl_sites_by_tract$snap_per_hh < quantile(na.omit(active_phl_sites_by_tract$snap_per_hh),0.25) ~ "Yes",
+                                              active_phl_sites_by_tract$snap_per_hh >= quantile(na.omit(active_phl_sites_by_tract$snap_per_hh),0.25) ~ "No"
+                                            )
+    
+active_phl_sites_by_tract$snap_expand = case_when(
+                                         na.omit(active_phl_sites_by_tract$med_hh_inc) > active_phl_sites_by_tract$avg_snap_thresh ~ 0,
+                                         na.omit(active_phl_sites_by_tract$med_hh_inc) <= active_phl_sites_by_tract$avg_snap_thresh ~ 
+                                           (50 -   active_phl_sites_by_tract$perc_snap))
+
+active_phl_sites_by_tract$snap_expand[active_phl_sites_by_tract$snap_expand == 0] <- NA
+
+active_phl_sites_by_tract$snap_expand_boolean = case_when(
+                                         na.omit(active_phl_sites_by_tract$med_hh_inc) > active_phl_sites_by_tract$avg_snap_thresh ~ "No",
+                                         na.omit(active_phl_sites_by_tract$med_hh_inc) <= active_phl_sites_by_tract$avg_snap_thresh ~ "Yes")
+
+#Spatial clean
+
+active_pz_sites = active_phl_sites[pz, ]
+
+active_pz_sites_by_tract = active_phl_sites_by_tract[pz, ]
+
+active_pz_largeorsuper = active_pz_sites |>
+                            filter(Store.Type %in% c("Large Grocery Store", "Supermarket"))
+
+active_pz_largeorsuper_buffer = st_buffer(active_pz_largeorsuper, units::as_units(0.5, "mile")) |> #dist has to be provided in units of CRS
+                                    st_transform(crs = st_crs("EPSG:4326"))
+
+active_phl_largeorsuper = active_phl_sites |>
+                            filter(Store.Type %in% c("Large Grocery Store", "Supermarket"))
+
+active_phl_largeorsuper_buffer = st_buffer(active_phl_largeorsuper, units::as_units(0.5, "mile")) |> #dist has to be provided in units of CRS
+                                    st_transform(crs = st_crs("EPSG:4326"))
+```
+
+
+#### SNAP Enrollment per Tract
+```{r enrollment, include = TRUE, echo = FALSE, message = FALSE, warning = FALSE, error = FALSE, fig.align='center', fig.show ='asis', results = "asis"}
+demos_map = tmap_leaflet(tm_shape(phl_demos, 
+                     bbox = c(-75.22, 39.95, -75.175, 39.98)) +
+                    tm_polygons(
+                      col = "perc_snap",
+                      border.col = NA,
+                      border.alpha = 0,
+                      palette = "viridis",
+                      style = "cont",
+                      alpha = 0.5,
+                      title = "Percent SNAP Enrollment",
+                    ) +
+                  tm_shape(pz)+
+                    tm_borders(col = "black",
+                               lwd = 1, 
+                               lty = "dashed") +
+                    tm_shape(phl_hoods) +
+                      tm_text(text = "MAPNAME") +
+                  tm_scale_bar() +
+                  tm_layout(main.title = "SNAP Enrollment (2020)",
+                            legend.outside = T))
+                  
+                  demos_map
+```
+
+
+#### Active SNAP Sites per Enrolled Household
+```{r snap sites per hh, include = TRUE, echo = FALSE, message = FALSE, warning = FALSE, error = FALSE, fig.align='center', fig.show ='asis', results = "asis"}
+tmap_mode("view")
+
+snap_ratio_map = tmap_leaflet(tm_shape(active_phl_sites_by_tract |>
+                                        filter(snap_per_hh != "NaN"), 
+                     bbox = c(-75.22, 39.95, -75.175, 39.98)) +
+                      tm_polygons(
+                        col = "snap_per_hh",
+                        border.col = NA,
+                        border.alpha = 0,
+                        palette = "viridis",
+                        style = "quantile",
+                        legend.hist = T,
+                        alpha = 0.5,
+                        title = "SNAP Sites per Household"
+                            ) +
+                      tm_shape(pz) +
+                      tm_borders(col = "black",
+                                 lwd = 1, 
+                                 lty = "dashed") +
+                      tm_shape(phl_hoods) +
+                        tm_text(text = "MAPNAME") +
+                    tm_scale_bar() +
+                    tm_layout(main.title = "SNAP Sites per SNAP-Enrolled Household (2020)",
+                                                  legend.outside = TRUE))
+
+snap_ratio_map
+```
+
+#### Currently-Active SNAP Stores by Type
+```{r active sites map, include = TRUE, echo = FALSE, message = FALSE, warning = FALSE, error = FALSE, fig.show = "asis", results = "asis", fig.align = 'center'}
+
+tmap_mode("view")
+
+sites_map = tm_shape(active_pz_sites, bbox = c(-75.22, 39.95, -75.175, 39.98)) +
+  tm_dots(
+    col = "Store.Type",
+    style = "cont",
+    id = "Store.Name",
+    size = 0.25,
+    alpha = 0.5,
+    title = "Store Type"
+  ) +
+tm_shape(pz)+
+  tm_borders(col = "black",
+             lwd = 1, 
+             lty = "dashed") +
+tm_scale_bar()
+
+sites_map
+```
+
+```{r table, include = TRUE, echo = FALSE, message = FALSE, warning = FALSE, error = FALSE, fig.show = "asis", results = "asis", fig.align = 'left'}
+sites_table = knitr::kable(as.data.frame(active_pz_sites)[, c(2, 3, 14)], col.names = c("Street Name", "Store Type", "Street Address"), format = "html") |>
+  kable_styling(full_width = T,
+                latex_options = "striped") |>
+  scroll_box(width = "85%", height = "250px")
+
+sites_table
+```
+
+### **Change in SNAP Availability over Time**
+It is important to understand the history of SNAP access in the Promise Zone. The number of stores in the Promise Zone accepting SNAP vouchers has declined steadily, down 43.3% from its peak of 60 in 2013. Meanwhile, SNAP enrollment as a percentage of the tract population has dropped approximately 7% from its peak of 37% around 2015 to a current level of about 30%. *Note, however, that the dropoff in SNAP sites (43%) has been much larger than the dropoff in SNAP enrollment (7%).*
+
+```{r historic demos, include = TRUE, echo = TRUE, message = FALSE, warning = FALSE, error = FALSE, results = 'hide'}
+#Here it's possible to use area weighted spatial interpolation to get a good estimate of number of households in th Promise Zone, and the subset of that population that's enrolled in SNAP.
+phl_demos_twenty = get_acs(geography = "tract", 
+                     year = 2020, #Most recent available year
+                     variables = c("B11001_001E", #Total number of households
+                                   "B22001_002E" #Number of hholds that received foodstamps/SNAP in last 12 months
+                                   ), 
+                     geometry = T, #we want this as a sf
+                     state = "PA", 
+                     county = "Philadelphia", 
+                     output = "wide") |> 
+                  rename(tot_hh = B11001_001E,
+                         snap_enroll = B22001_002E) |>
+                    st_transform(crs = st_crs("EPSG:4326"))
+
+#vars15 = load_variables(2015, "acs5")
+#vars10 = load_variables(2010, "acs5")
+
+phl_demos_fifteen = get_acs(geography = "tract", 
+                     year = 2015, #Most recent available year
+                     variables = c("B11001_001E", #Total number of households
+                                   "B22001_002E" #Number of hholds that received foodstamps/SNAP in last 12 months
+                                   ), 
+                     geometry = T, #we want this as a sf
+                     state = "PA", 
+                     county = "Philadelphia", 
+                     output = "wide") |> 
+                  rename(tot_hh = B11001_001E,
+                         snap_enroll = B22001_002E)|>
+                    st_transform(crs = st_crs("EPSG:4326"))
+  
+phl_demos_ten = get_acs(geography = "tract", 
+                     year = 2010, #Most recent available year
+                     variables = c("B11001_001E", #Total number of households
+                                   "B22001_002E" #Number of hholds that received foodstamps/SNAP in last 12 months
+                                   ), 
+                     geometry = T, #we want this as a sf
+                     state = "PA", 
+                     county = "Philadelphia", 
+                     output = "wide") |> 
+                  rename(tot_hh = B11001_001E,
+                         snap_enroll = B22001_002E)|>
+                    st_transform(crs = st_crs("EPSG:4326"))
+
+pz_demos_twenty = st_interpolate_aw(phl_demos_twenty[, c(3,5)], pz, ext = TRUE) |>
+                    mutate(year = 2020)
+
+pz_demos_fifteen = st_interpolate_aw(phl_demos_fifteen[, c(3,5)], pz, ext = TRUE)|>
+                    mutate(year = 2015)
+
+pz_demos_ten = st_interpolate_aw(phl_demos_ten[, c(3,5)], pz, ext = TRUE)|>
+                    mutate(year = 2010)
+
+pz_historic_demos = rbind(pz_demos_twenty, pz_demos_fifteen, pz_demos_ten)
+
+pz_historic_demos$year = as.character(pz_historic_demos$year)
+
+pz_historic_demos = pz_historic_demos |>
+                      mutate(pct_snap_enroll = snap_enroll / tot_hh*100)
+
+pz_historic_demos$active_snap_sites = c(34, 56, 45)
+```
+
+```{r historic demos plot, include = TRUE, echo = FALSE, message = FALSE, warning = FALSE, error = FALSE, fig.show = "asis", fig.align = 'center', results = 'asis'}
+
+#Plot this!
+historic_demos_bar = ggplot(pz_historic_demos) +
+                          geom_col(aes(x = year,
+                                        y = pct_snap_enroll),
+                                    fill = "#541352FF",
+                                    alpha = 0.7,
+                                   linetype = "dashed") +
+                          geom_text(aes(x = year, 
+                                        y = (pct_snap_enroll + 2), 
+                                        label = as.integer(pct_snap_enroll))) +
+                          labs(title = "Promise Zone SNAP Enrollment",
+                               y = "SNAP Enrollment (%)",
+                               x = "Year")+
+                          theme_minimal()
+
+snap_by_year_bar = ggplot(pz_historic_demos) +
+                          geom_col(aes(x = year,
+                                        y = active_snap_sites),
+                                    fill = "#10a53dFF",
+                                    alpha = 0.7,
+                                   linetype = "dashed") +
+                          geom_text(aes(x = year, 
+                                        y = (active_snap_sites + 2), 
+                                        label = as.integer(active_snap_sites))) +
+                          labs(title = "Active Snap Sites",
+                               y = "Active Sites",
+                               x = "Year")+
+                          theme_minimal()
+
+
+ggarrange(historic_demos_bar, snap_by_year_bar, ncol = 2)
+```
+
+#### 2010 (Total Sites: 45) --- ---  |  --- ---   2015 (Total Sites: 56)  --- ---   |  --- ---  2020 (Total Sites: 34)
+```{r prep point maps, include = TRUE, echo = FALSE, message = FALSE, warning = FALSE, error = FALSE, fig.align='center', results = 'hold'}
+tmap_mode("view")
+
+ten = tm_shape((pz_snap |>
+                                 filter(first_auth_year <= 2010 &
+                                          (end_year > 2010 | 
+                                             status == "active"))), 
+                     bbox = c(-75.22, 39.95, -75.175, 39.98)) +
+  tm_dots(
+    col = "#541352ff",
+    id = "ï..first_name",
+    title = "2010 (Total Sites: 45)",
+    alpha = 0.7
+  ) +
+tm_shape(pz)+
+  tm_borders(col = "black",
+             lwd = 1, 
+             lty = "dashed") +
+tm_scale_bar()
+
+fifteen = tm_shape((pz_snap |>
+                                 filter(first_auth_year <= 2015 &
+                                          (end_year > 2015 | 
+                                             status == "active"))), 
+                     bbox = c(-75.22, 39.95, -75.175, 39.98)) +
+  tm_dots(
+    col = "#541352ff",
+    id = "ï..first_name",
+    title = "2015 (Total Sites: 56)",
+    alpha = 0.7
+  ) +
+tm_shape(pz)+
+  tm_borders(col = "black",
+             lwd = 1, 
+             lty = "dashed") +
+tm_scale_bar()
+
+twenty = tm_shape((pz_snap |>
+                                 filter(first_auth_year <= 2020 &
+                                          (end_year > 2020 | 
+                                             status == "active"))), 
+                     bbox = c(-75.22, 39.95, -75.175, 39.98)) +
+  tm_dots(
+    col = "#541352ff",
+    id = "ï..first_name",
+    title = "2020 (Total Sites: 34)",
+    alpha = 0.7
+  ) +
+tm_shape(pz)+
+  tm_borders(col = "black",
+             lwd = 1, 
+             lty = "dashed") +
+tm_scale_bar()
+
+
+tmap_arrange(ten, fifteen, twenty, ncol = 3)
+```
+
+
+
+### **Opportunities for Improvement**
+The data available from the American Communities Survey and the USDA can inform more targeted policy to expand SNAP access. 
+
+First, ACS data can be used to identify where SNAP enrollment is lower than expected. Comparing the median income per tract to the predicted SNAP cutoff per tract indicates whether SNAP enrollment in that tract could be higher. For tracts where the median income is *lower* than the SNAP cutoff, at least 50% of the population should be eligible for SNAP. If SNAP enrollment is lower than 50%, then SNAP enrollment can likely be expanded in that tract. 
+
+Second, the ratio of SNAP-accepting stores per tract to SNAP-enrolled households per tract indicates whether SNAP supply meets demand. In the map below, tracts in yellow are those where the ratio of SNAP stores to SNAP-enrolled households is in the bottom quartile city-wide, suggesting that supply may be insufficient.
+
+(Both these measures are imperfect. They are meant to give a sense of what tracts most need higher enrollment or better access, and what the approximate magnitude of that need is, but they cannot project an exact target enrollment percentage or ratio of SNAP stores to enrolled households.)
+
+Finally, the locations of the only three large grocery stores or supermarkets are indicated in black, with purple buffers to indicate a walkable range (half a mile). Areas not covered by these buffers would likey benefit from increased access to large, high-quality grocery stores.\
+
+```{r sites per hh map, include = TRUE, echo = FALSE, message = FALSE, warning = FALSE, error = FALSE, fig.align='center'}
+tmap_mode("view")
+
+low_snap_map = tmap_leaflet(tm_shape(active_phl_sites_by_tract |>
+                                        filter(low_snap_per_hh != "NaN"), 
+                     bbox = c(-75.22, 39.95, -75.175, 39.98)) +
+  tm_polygons(
+    col = "low_snap_per_hh",
+    border.alpha = 0,
+    palette = c("white", "#ffcf20FF"),
+    style = "cont",
+    alpha = 0.5,
+    title = "Low Ratio of SNAP Sites to Enrollees",
+  ) +
+  tm_shape(active_phl_sites_by_tract |>
+                filter(snap_expand_boolean != "NaN")) +
+  tm_polygons(
+    col = "snap_expand_boolean",
+    id = "snap_expand",
+    border.alpha = 0,
+    palette = c("white", "#2f9aa0FF"),
+    style = "cont",
+    alpha = 0.5,
+    title = "SNAP Enrollment Lower than Expected"
+  ) +
+tm_shape(active_pz_largeorsuper_buffer) +
+  tm_polygons(col = "#541352FF",
+              border.col = "#541352FF",
+          alpha = 0.3,
+          title = "Supermarkets & Large Grocery Stores") +
+  tm_shape(active_pz_largeorsuper) +
+  tm_dots(col = "black",
+          id = "Store.Name") +
+tm_shape(pz)+
+  tm_borders(col = "black",
+             lwd = 1, 
+             lty = "dashed") +
+  tm_shape(phl_hoods) +
+    tm_text(text = "MAPNAME") +
+tm_scale_bar() +
+tm_layout(main.title = "Tracts to Expand SNAP Offerings & Enrollment",
+          legend.outside = T))
+
+low_snap_map
+```
+### **Addendum: SEPTA Routes**
+These maps below compare the most recently-available SEPTA bus and rail routes to the locations of active SNAP-accepting large grocery stores and supermarkets in and around the Promise Zone.\
+```{r transit routes, include = TRUE, echo = FALSE, message = FALSE, warning = FALSE, error = FALSE, fig.align='center'}
+tmap_mode("view")
+
+transit_map = tm_shape(phl_bus_routes, bbox = c(-75.22, 39.95, -75.175, 39.98))+
+                  tm_lines(col = "darkblue",
+                           lwd = 1) +
+                tm_shape(phl_trolley_routes)+
+                  tm_lines(col = "green",
+                           lwd = 1) +
+                tm_shape(phl_highspeed_routes)+
+                  tm_lines(col = "orange",
+                           lwd = 1) +
+                tm_shape(active_phl_largeorsuper)+
+                  tm_symbols(col = "yellow",
+                             shape = 24) +
+              tm_shape(pz)+
+                tm_borders(col = "black",
+                           lwd = 2, 
+                           lty = "dashed") +
+              tm_scale_bar()
+              
+
+buffers_map = tm_shape(active_phl_largeorsuper, bbox = c(-75.22, 39.95, -75.175, 39.98)) +
+                tm_dots(
+                  col = "black",
+                  style = "cont",
+                  id = "Store.Name",
+                  alpha = 1,
+                  title = "Store Type"
+                    ) +
+                tm_shape(active_phl_largeorsuper_buffer) +
+                tm_polygons(col = "#541352FF",
+                            border.col = "#541352FF",
+                        alpha = 0.1,
+                        title = "Supermarkets & Large Grocery Stores") +
+                tm_shape(pz)+
+                tm_borders(col = "black",
+                           lwd = 1, 
+                           lty = "dashed") +
+              tm_scale_bar()
+
+tmap_arrange(transit_map, buffers_map, ncol = 2)
+```
+
+
+### **Further Questions**
+This report raises a few questions worth investigating further in order to better serve the Promise Zone community.
+
+First, what explains the decline in SNAP sites from 2011 to the present? Was this a city-wide trend or did it only happen in the Promise Zone? Did these stores go out of business entirely or simply stop accepting SNAP? If the latter is true, how can they be convinced to accept SNAP again?
+
+Second, how the quality of SNAP food offerings in the Promise Zone be assessed? Is it worth conducting a field survey of the 34 active SNAP-accepting stores in the Promise Zone?
+
+
+### **Methodology**
+This report combines data from the Census Bureau's 2015-20 American Communities Survey and from the USDA's Food Retail Locator. These are imperfect data sources; the ACS relies on 5-year geographic estimates, and its most current year is 2020, while the USDA offers client-level data through 2022. However, when treated in combination and with caution, they can meaningfully inform Promise Zone policy.
+
+This report refers to multiple new variables calculated based from ACS and USDA data:
+
+First, the average SNAP income threshold per tract was calculated by taking the average household size per tract and plugging it into the formula for the annual per household SNAP income threshold, c = 12(1396 + (492(n-1))), where n is the number of members in the household. 
+
+```
+phl_demos <- phl_demos |>
+  mutate(perc_snap = snap_enroll / tot_hh * 100) |>
+  mutate(avg_snap_thresh = (12*(1396 + (492*(avg_hh_size-1))))) 
+```
+
+Second, to identify tracts where there may be an opportunity for greater SNAP enrollment, the ratio of per tract median annual household income to per tract average SNAP income threshold is calculated. Then, for all tracts where this ratio is less than or equal to one, the difference of 50% and the tract's percent SNAP enrollment is calculated (given that the median represents 50% of all incomes in the tract). All tracts where this difference is greater than zero indicate the approximate potential to expand SNAP enrollment per tract. They were identified with "Yes" or "No" values on the map, but can be moused over to see a better approximation of the magnitude of potential SNAP expansion.
+
+```
+phl_demos <- phl_demos |>
+  mutate(med_hh_inc_as_perc_snap_thresh =  med_hh_inc / avg_snap_thresh)
+  
+
+active_phl_sites_by_tract$snap_expand = case_when(
+                                         active_phl_sites_by_tract$med_hh_inc > active_phl_sites_by_tract$avg_snap_thresh ~ 0,
+                                         active_phl_sites_by_tract$med_hh_inc <= active_phl_sites_by_tract$avg_snap_thresh ~ 
+                                           (50 -   active_phl_sites_by_tract$perc_snap)
+                                           )
+                                           
+active_phl_sites_by_tract$snap_expand_boolean = case_when(
+                                         active_phl_sites_by_tract$med_hh_inc > active_phl_sites_by_tract$avg_snap_thresh ~ "No",
+                                         active_phl_sites_by_tract$med_hh_inc <= active_phl_sites_by_tract$avg_snap_thresh ~ "Yes")
+```
+
+### **Sources**
+*American Community Survey, 2015-20*\
+*[Benefits.gov](https://www.benefits.gov/benefit/1169#:~:text=Annual%20Household%20Income%20Limits%20%28before%20taxes%29%20%20,%20%20%2436%2C075%20%204%20more%20rows%20)*\
+*[SEPTA OpenData](https://septaopendata-septa.opendata.arcgis.com/)*\
+*[United States Department of Agriculture Food Retailer Locator](https://www.fns.usda.gov/snap/retailer-locator)*
